@@ -41,10 +41,6 @@ std::vector<double> parseToDoubles(std::string line)
         // Round value to 4 decimals.
 		double new_val = std::ceil(val * 10000.0) / 10000.0;
 
-		if (new_val == 0 && val != 0) {
-			std::cout << "zero" << std::endl;
-		}
-
         result.push_back(new_val);
     }
 

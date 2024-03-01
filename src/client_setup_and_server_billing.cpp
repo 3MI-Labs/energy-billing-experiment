@@ -4,6 +4,7 @@
 #include <fmt/core.h>
 #include <fstream>
 #include <sstream>
+#include <chrono>
 
 #include "utils_ckks.h"
 #include "vectorutils.hpp"
@@ -15,7 +16,7 @@ static const int TIMESLOTS_PER_DAY = 24;
 static const int TIMESLOTS = DAYS * TIMESLOTS_PER_DAY;
 static const int NR_CLIENTS = 150;
 
-
+static const int N_TIME_SLOTS = 1024; // should be a power of two, greater than TIMESLOTS
 
 using namespace lbcrypto;
 
@@ -39,7 +40,8 @@ std::tuple<vector<double>,
 		   vector<double>>
 context_setup()
 {
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/" + std::to_string(TIMESLOTS) + "/context.csv";
+	std::string dirname = "/" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients";
+	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data" + dirname + "/context.csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
@@ -102,7 +104,8 @@ std::tuple<
 load_client_data(int clientID)
 {
 	// Open specified datafile
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/" + std::to_string(TIMESLOTS) + "/data_user_" + std::to_string(clientID) + ".csv";
+	std::string dirname = "/" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients";
+	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data" + dirname + "/user_" + std::to_string(clientID) + ".csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
@@ -277,7 +280,6 @@ std::tuple<Ciphertext<DCRTPoly>,
 server_billing(
 	CryptoContext<DCRTPoly> &cc,
 	PublicKey<DCRTPoly> publickey,
-	PrivateKey<DCRTPoly> privkey, // todo: remove
 
 	// Context information
 	std::vector<double> tradingPrice,
@@ -308,13 +310,6 @@ server_billing(
 	// CASE: User not accepted for P2P trading -> they pay/get retail price
 	Ciphertext<DCRTPoly> bill_no_p2p = pack_and_mult(consumption, retailPrice, cc);
 	Ciphertext<DCRTPoly> reward_no_p2p = pack_and_mult(supplies, feedInTarif, cc);
-
-	// lbcrypto::Plaintext pt;
-	// cc->Decrypt(privkey, reward_no_p2p, &pt);
-	// std::cout << "Reward no p2p: " << pt << std::endl;
-	// cc->Decrypt(privkey, supplies, &pt);
-	// std::cout << "supplies: " << pt << std::endl;
-	// std::cout << "fit: " << feedInTarif[1] << std::endl;
 
 	// CASE: User was accepted for P2P trading
 			Ciphertext<DCRTPoly> baseBill = pack_and_mult(consumption, tradingPrice, cc);
@@ -379,7 +374,6 @@ server_billing(
 void experiment()
 {
 	// Generate FHE context
-	static const int N_TIME_SLOTS = 256;
 	CCParams<CryptoContextCKKSRNS> parameters = generate_parameters_ckks(N_TIME_SLOTS);
 	CryptoContext<DCRTPoly> cc = generate_crypto_context_ckks(parameters);
 	std::cout << "CKKS scheme is using ring dimension " 
@@ -394,7 +388,7 @@ void experiment()
 	auto keys = cc->KeyGen();			// encryption and decryption keys
 	cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
 	const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
-	const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
+	// const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
 
 	// Load experiment context
 	auto [
@@ -413,8 +407,8 @@ void experiment()
 	] = server_setup(totalDeviation);
 
 	// Run experiment
-	std::vector<double> client_timings(NR_CLIENTS, 0);
-	std::vector<double> server_timings(NR_CLIENTS, 0);
+	std::vector<int64_t> client_timings(NR_CLIENTS, 0);
+	std::vector<int64_t> server_timings(NR_CLIENTS, 0);
 	for (int userID = 0; userID < NR_CLIENTS; userID++)
 	{
 		// Load client data
@@ -430,12 +424,8 @@ void experiment()
 			expectedReward
 		] = load_client_data(userID);		
 
-		std::cout << consumptions[0] << std::endl;
-		std::cout << supplies[0] << std::endl;
-		std::cout << retailPrice[0] << std::endl;
-
 		// Setup client
-		std::cout << "Running client setup" << std::endl;
+		auto setup_client_start = std::chrono::high_resolution_clock::now();
 		auto [
 			ct_consumption, 
 			ct_supplies, 
@@ -443,13 +433,15 @@ void experiment()
 			ct_signs,
 			ct_accepted
 		] = client_setup(cc, ckks_pub_key, consumptions, supplies, deviations, accepted);
+		auto setup_client_end = std::chrono::high_resolution_clock::now();
+		auto setup_duration = std::chrono::duration_cast<std::chrono::microseconds>( setup_client_end - setup_client_start).count();
+		client_timings[userID] = setup_duration;
 
 		// Execute server billing
-		std::cout << "Running billing" << std::endl;
+		auto server_billing_start = std::chrono::high_resolution_clock::now();
 		auto [ct_bill, ct_reward] = server_billing(
 			cc,
 			ckks_pub_key,
-			ckks_priv_key,
 
 			tradingPrice,
 			retailPrice,
@@ -468,63 +460,35 @@ void experiment()
 			ct_signs,
 			ct_accepted
 		);
+		auto server_billing_end = std::chrono::high_resolution_clock::now();
+		auto billing_duration = std::chrono::duration_cast<std::chrono::microseconds>(server_billing_end - server_billing_start).count();
+		server_timings[userID] = billing_duration;
 
-		// Decrypt bill and reward per timeslot
-		lbcrypto::Plaintext pt_bill;
-		cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
-		std::cout << "Bill: " << pt_bill << std::endl;
+		// // Decrypt bill and reward per timeslot
+		// lbcrypto::Plaintext pt_bill;
+		// cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
+		// std::cout << "Bill: " << pt_bill << std::endl;
 
-		lbcrypto::Plaintext pt_reward;
-		cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
-		std::cout << "Reward: " << pt_reward << std::endl;
-
-		// if (userID < 30) {
-		// 	// Prosumers; only validate reward
-		// 	for (int i = 0; i < TIMESLOTS; i ++) {
-		// 		double reward = pt_reward[i];
-		// 		assert(reward == expectedReward[i]);
-		// 	}
-		// } else {
-		// 	// Consumer; only validate bill
-		// 	for (int i = 0; i < TIMESLOTS; i ++) {
-		// 		assert(pt_bill[i] == expectedBill[i]);
-		// 	}
-
-		// }
+		// lbcrypto::Plaintext pt_reward;
+		// cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
+		// std::cout << "Reward: " << pt_reward << std::endl;
 	}
 
+	// Write client timings to file
+	std::string client_timing_fname = "timing_client_" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients.txt";
+	std::ofstream client_timing_file(client_timing_fname);
+    std::ostream_iterator<std::int64_t> client_iterator(client_timing_file, "\n");
+    std::copy(client_timings.begin(), client_timings.end(), client_iterator);
 
+	// Write server timings to file
+	std::string server_timing_fname = "timing_server_" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients.txt";
+	std::ofstream server_billing_file(server_timing_fname);
+    std::ostream_iterator<std::int64_t> server_iterator(server_billing_file, "\n");
+    std::copy(server_timings.begin(), server_timings.end(), server_iterator);
 }
 
 int main()
 {
 	experiment();
-	
-	// for (int i = 0; i < NR_CLIENTS; i++)
-	// {
-	// 	// Generate FHE key-pair
-	// 	auto keys = cc->KeyGen();			// encryption and decryption keys
-	// 	cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
-	// 	const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
-	// 	const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
-
-	// 	// Just to debug
-	// 	std::cout << "Moduli chain of pk: " << std::endl;
-	// 	print_moduli_chain(ckks_pub_key);
-
-	// 	// Compute bill
-	// 	auto [ct_bill, ct_reward] = compute_bill(cc, ckks_pub_key, ckks_priv_key, i);
-
-	// 	// Bill per timeslot
-	// 	lbcrypto::Plaintext pt_bill;
-	// 	cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
-	// 	std::cout << "Bill: " << pt_bill << std::endl;
-
-	// 	// Reward per timeslot
-	// 	lbcrypto::Plaintext pt_reward;
-	// 	cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
-	// 	std::cout << "Reward: " << pt_reward << std::endl;
-	// }
-
 	return 0;
 }
