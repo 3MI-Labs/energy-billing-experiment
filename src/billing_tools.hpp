@@ -39,7 +39,7 @@ std::vector<double> parseToDoubles(std::string line)
 		double val = stringToDouble(cell);
 
         // Round value to 4 decimals.
-		double new_val = std::ceil(val * 1000.0) / 1000.0;
+		double new_val = std::ceil(val * 10000.0) / 10000.0;
 
 		if (new_val == 0 && val != 0) {
 			std::cout << "zero" << std::endl;

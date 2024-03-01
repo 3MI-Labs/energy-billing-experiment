@@ -9,9 +9,13 @@
 #include "vectorutils.hpp"
 #include "billing_tools.hpp"
 
-const static int DAYS = 7;
-const static int TIMESLOTS_PER_DAY = 24;
-const static int TIMESLOTS = DAYS * TIMESLOTS_PER_DAY;
+// Experiment settings
+static const int DAYS = 1;
+static const int TIMESLOTS_PER_DAY = 24;
+static const int TIMESLOTS = DAYS * TIMESLOTS_PER_DAY;
+static const int NR_CLIENTS = 150;
+
+
 
 using namespace lbcrypto;
 
@@ -35,7 +39,7 @@ std::tuple<vector<double>,
 		   vector<double>>
 context_setup()
 {
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/168/context.csv";
+	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/" + std::to_string(TIMESLOTS) + "/context.csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
@@ -43,6 +47,9 @@ context_setup()
 		throw std::invalid_argument("cannot open specified file");
 	}
 	std::string line;
+
+	// Skip header line
+	getline(inputFile, line);
 
 	// Feed-in tarif
 	getline(inputFile, line);
@@ -89,13 +96,13 @@ std::tuple<
 	std::vector<double>,
 	std::vector<double>,
 	std::vector<double>,
+	std::vector<double>,
 	std::vector<double>
 >
-load_client_data(int user_idx)
+load_client_data(int clientID)
 {
 	// Open specified datafile
-	// std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/data_user_" + std::to_string(user_idx) + ".csv";
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/168/data_user_101.csv";
+	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data/" + std::to_string(TIMESLOTS) + "/data_user_" + std::to_string(clientID) + ".csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
@@ -107,6 +114,21 @@ load_client_data(int user_idx)
 	// Skip header line
 	getline(inputFile, line);
 
+	// Retail price
+	getline(inputFile, line);
+	std::vector<double> retailPrice = parseToDoubles(line);
+	assert(retailPrice.size() == TIMESLOTS);
+
+	// Consumption promise
+	getline(inputFile, line);
+	std::vector<double> consumption_promise = parseToDoubles(line);
+	assert(consumption_promise.size() == TIMESLOTS);
+
+	// Supply promise
+	getline(inputFile, line);
+	std::vector<double> supply_promise = parseToDoubles(line);
+	assert(supply_promise.size() == TIMESLOTS);
+
 	// Consumption
 	getline(inputFile, line);
 	std::vector<double> consumptions = parseToDoubles(line);
@@ -116,26 +138,16 @@ load_client_data(int user_idx)
 	getline(inputFile, line);
 	std::vector<double> supplies = parseToDoubles(line);
 	assert(supplies.size() == TIMESLOTS);
-
-	// Consumption/production prediction
+	
+	// Individual deviation
 	getline(inputFile, line);
-	std::vector<double> promise = parseToDoubles(line);
-	assert(promise.size() == TIMESLOTS);
-
-	// Retail price
-	getline(inputFile, line);
-	std::vector<double> retailPrice = parseToDoubles(line);
-	assert(retailPrice.size() == TIMESLOTS);
+	std::vector<double> deviations = parseToDoubles(line);
+	assert(deviations.size() == TIMESLOTS);
 
 	// Trading accepted
 	getline(inputFile, line);
 	std::vector<double> accepted = parseToDoubles(line);
 	assert(accepted.size() == TIMESLOTS);
-
-	// Individual deviation
-	getline(inputFile, line);
-	std::vector<double> deviations = parseToDoubles(line);
-	assert(deviations.size() == TIMESLOTS);
 
 	// Expected bill
 	getline(inputFile, line);
@@ -152,7 +164,8 @@ load_client_data(int user_idx)
 	return {
 		consumptions,
 		supplies,
-		promise,
+		consumption_promise,
+		supply_promise,
 		retailPrice,
 		accepted,
 		deviations,
@@ -270,8 +283,8 @@ server_billing(
 	std::vector<double> tradingPrice,
 	std::vector<double> retailPrice,
 	std::vector<double> feedInTarif,
-	std::vector<double> totalConsumers,
-	std::vector<double> totalProsumers,
+	std::vector<double> totalP2PConsumers,
+	std::vector<double> totalP2PProsumers,
 
 	// Deviation information
 	std::vector<double> totalDeviation,
@@ -292,9 +305,16 @@ server_billing(
 	Ciphertext<DCRTPoly> nonNegDevSigns = negate_all_slots(negDevSigns, cc);
 	
 
-	// CASE: User not accepted for P2P trading -> they pay retail price
+	// CASE: User not accepted for P2P trading -> they pay/get retail price
 	Ciphertext<DCRTPoly> bill_no_p2p = pack_and_mult(consumption, retailPrice, cc);
 	Ciphertext<DCRTPoly> reward_no_p2p = pack_and_mult(supplies, feedInTarif, cc);
+
+	// lbcrypto::Plaintext pt;
+	// cc->Decrypt(privkey, reward_no_p2p, &pt);
+	// std::cout << "Reward no p2p: " << pt << std::endl;
+	// cc->Decrypt(privkey, supplies, &pt);
+	// std::cout << "supplies: " << pt << std::endl;
+	// std::cout << "fit: " << feedInTarif[1] << std::endl;
 
 	// CASE: User was accepted for P2P trading
 			Ciphertext<DCRTPoly> baseBill = pack_and_mult(consumption, tradingPrice, cc);
@@ -320,9 +340,9 @@ server_billing(
 				// hence,
 				// supplement = TD / nr_p2p_consumers * (retail_price - trading price)
 
-				vector<double> billSupplement_pt = ((retailPrice - tradingPrice) / totalConsumers) * totalDeviation;
+				vector<double> billSupplement_pt = ((retailPrice - tradingPrice) / totalP2PConsumers) * totalDeviation;
 				Ciphertext<DCRTPoly> billSupplement_ct = pack_and_encrypt(billSupplement_pt, cc, publickey);
-				billSupplement_ct = cc->EvalMult(billSupplement_ct, negDevSigns);
+				billSupplement_ct = cc->EvalMult(billSupplement_ct, nonNegDevSigns);
 		
 		// CASE: TD > 0
 			// demand < supply
@@ -341,7 +361,7 @@ server_billing(
 				// penalty = (TD / nr_p2p_prosumers * (feedInTarif - tradingPrice)
 				//
 				// Note that the penalty is negative, since feedInTarif is assumed to be < tradingPrice
-				vector<double> rewardPenalty_pt = ((feedInTarif - tradingPrice) / totalProsumers) * totalDeviation;
+				vector<double> rewardPenalty_pt = ((feedInTarif - tradingPrice) / totalP2PProsumers) * totalDeviation;
 				Ciphertext<DCRTPoly> rewardPenalty_ct = pack_and_encrypt(rewardPenalty_pt, cc, publickey);
 				rewardPenalty_ct = cc->EvalMult(rewardPenalty_ct, nonNegDevSigns);
 
@@ -356,16 +376,27 @@ server_billing(
 	return {bill_ct, reward_ct};
 }
 
-std::tuple<Ciphertext<DCRTPoly>,
-		   Ciphertext<DCRTPoly>>
-compute_bill(
-	CryptoContext<DCRTPoly> &cc,
-	PublicKey<DCRTPoly> ckks_pub_key,
-	PrivateKey<DCRTPoly> ckks_priv_key,
-	int user_id
-)
+void experiment()
 {
-	// Load context
+	// Generate FHE context
+	static const int N_TIME_SLOTS = 256;
+	CCParams<CryptoContextCKKSRNS> parameters = generate_parameters_ckks(N_TIME_SLOTS);
+	CryptoContext<DCRTPoly> cc = generate_crypto_context_ckks(parameters);
+	std::cout << "CKKS scheme is using ring dimension " 
+			  << cc->GetRingDimension()
+			  << std::endl;
+
+	// Check that we can handle the expected data size.
+	int N = cc->GetRingDimension();
+	assert(TIMESLOTS <= N / 2); // we can pack up to N/2 values into one ciphertext.
+
+	// Generate FHE key-pair
+	auto keys = cc->KeyGen();			// encryption and decryption keys
+	cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
+	const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
+	const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
+
+	// Load experiment context
 	auto [
 		feedInTarif,
 		tradingPrice,
@@ -381,96 +412,119 @@ compute_bill(
 		maskTotalDevNegative
 	] = server_setup(totalDeviation);
 
-	// Load client data
-	auto [
-		consumptions,
-		supplies,
-		promise,
-		retailPrice,
-		accepted,
-		deviations,
-		expectedBill,
-		expectedReward
-	] = load_client_data(user_id);
-
-	// Setup client
-	auto [
-		ct_consumption, 
-		ct_supplies, 
-		ct_deviations, 
-		ct_signs,
-		ct_accepted
-	] = client_setup(cc, ckks_pub_key, consumptions, supplies, deviations, accepted);
-
-	// Execute server billing
-	auto [ct_bill, ct_reward] = server_billing(
-		cc,
-		ckks_pub_key,
-		ckks_priv_key,
-
-		tradingPrice,
-		retailPrice,
-		feedInTarif,
-		totalConsumers,
-		totalProsumers,
-
-		totalDeviation,
-		maskTotalDevPositive,
-		maskTotalDevZero,
-		maskTotalDevNegative,
-
-		ct_consumption,
-		ct_supplies, 
-		ct_deviations, 
-		ct_signs,
-		ct_accepted
-	);
-
-	return {ct_bill, ct_reward};
-}
-
-int main()
-{
-	static const int NR_USERS = 150;
-	static const int N_TIME_SLOTS = 256;
-
-	// Generate FHE context
-	CCParams<CryptoContextCKKSRNS> parameters = generate_parameters_ckks(N_TIME_SLOTS);
-	CryptoContext<DCRTPoly> cc = generate_crypto_context_ckks(parameters);
-	std::cout << "CKKS scheme is using ring dimension " 
-			  << cc->GetRingDimension()
-			  << std::endl;
-
-	// Check that we can handle the expected data size.
-	int N = cc->GetRingDimension();
-	assert(TIMESLOTS <= N / 2); // we can pack up to N/2 values into one ciphertext.
-
-
-	for (int i = 0; i < NR_USERS; i++)
+	// Run experiment
+	std::vector<double> client_timings(NR_CLIENTS, 0);
+	std::vector<double> server_timings(NR_CLIENTS, 0);
+	for (int userID = 0; userID < NR_CLIENTS; userID++)
 	{
-		// Generate FHE key-pair
-		auto keys = cc->KeyGen();			// encryption and decryption keys
-		cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
-		const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
-		const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
+		// Load client data
+		auto [
+			consumptions,
+			supplies,
+			consumption_promise,
+			supply_promise,
+			retailPrice,
+			accepted,
+			deviations,
+			expectedBill,
+			expectedReward
+		] = load_client_data(userID);		
 
-		// Just to debug
-		std::cout << "Moduli chain of pk: " << std::endl;
-		print_moduli_chain(ckks_pub_key);
+		std::cout << consumptions[0] << std::endl;
+		std::cout << supplies[0] << std::endl;
+		std::cout << retailPrice[0] << std::endl;
 
-		// Compute bill
-		auto [ct_bill, ct_reward] = compute_bill(cc, ckks_pub_key, ckks_priv_key, i);
+		// Setup client
+		std::cout << "Running client setup" << std::endl;
+		auto [
+			ct_consumption, 
+			ct_supplies, 
+			ct_deviations, 
+			ct_signs,
+			ct_accepted
+		] = client_setup(cc, ckks_pub_key, consumptions, supplies, deviations, accepted);
 
-		// Bill per timeslot
+		// Execute server billing
+		std::cout << "Running billing" << std::endl;
+		auto [ct_bill, ct_reward] = server_billing(
+			cc,
+			ckks_pub_key,
+			ckks_priv_key,
+
+			tradingPrice,
+			retailPrice,
+			feedInTarif,
+			totalConsumers,
+			totalProsumers,
+
+			totalDeviation,
+			maskTotalDevPositive,
+			maskTotalDevZero,
+			maskTotalDevNegative,
+
+			ct_consumption,
+			ct_supplies, 
+			ct_deviations, 
+			ct_signs,
+			ct_accepted
+		);
+
+		// Decrypt bill and reward per timeslot
 		lbcrypto::Plaintext pt_bill;
 		cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
 		std::cout << "Bill: " << pt_bill << std::endl;
 
-		// Reward per timeslot
 		lbcrypto::Plaintext pt_reward;
 		cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
 		std::cout << "Reward: " << pt_reward << std::endl;
+
+		// if (userID < 30) {
+		// 	// Prosumers; only validate reward
+		// 	for (int i = 0; i < TIMESLOTS; i ++) {
+		// 		double reward = pt_reward[i];
+		// 		assert(reward == expectedReward[i]);
+		// 	}
+		// } else {
+		// 	// Consumer; only validate bill
+		// 	for (int i = 0; i < TIMESLOTS; i ++) {
+		// 		assert(pt_bill[i] == expectedBill[i]);
+		// 	}
+
+		// }
 	}
+
+
+}
+
+int main()
+{
+	experiment();
+	
+	// for (int i = 0; i < NR_CLIENTS; i++)
+	// {
+	// 	// Generate FHE key-pair
+	// 	auto keys = cc->KeyGen();			// encryption and decryption keys
+	// 	cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
+	// 	const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
+	// 	const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
+
+	// 	// Just to debug
+	// 	std::cout << "Moduli chain of pk: " << std::endl;
+	// 	print_moduli_chain(ckks_pub_key);
+
+	// 	// Compute bill
+	// 	auto [ct_bill, ct_reward] = compute_bill(cc, ckks_pub_key, ckks_priv_key, i);
+
+	// 	// Bill per timeslot
+	// 	lbcrypto::Plaintext pt_bill;
+	// 	cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
+	// 	std::cout << "Bill: " << pt_bill << std::endl;
+
+	// 	// Reward per timeslot
+	// 	lbcrypto::Plaintext pt_reward;
+	// 	cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
+	// 	std::cout << "Reward: " << pt_reward << std::endl;
+	// }
 
 	return 0;
 }
