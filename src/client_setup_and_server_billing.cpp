@@ -16,8 +16,9 @@ static const int TIMESLOTS_PER_DAY = 24;
 static const int TIMESLOTS = DAYS * TIMESLOTS_PER_DAY;
 static const int NR_CLIENTS = 150;
 static const int N_TIME_SLOTS = 1024; // should be a power of two, greater than TIMESLOTS
-
 static const string DATA_DIR = "../../../energy-billing-data-generation/data";
+
+
 
 using namespace lbcrypto;
 
@@ -87,10 +88,25 @@ context_setup()
 		totalDeviation
 	};
 }
+/* 	END definition of function context_setup  */
 
 /**
+ * Loads client data from file.
  * 
-*/
+ * Returns:
+ * - client's consumptions,
+ * - ... supplies, 
+ * - ... consumption_promise, 
+ * - ... supply_promise, 
+ * - ... retailPrice, 
+ * - ... accepted, 
+ * - ... deviations, 
+ * - ... expected bill, 
+ * - ... expected reward.
+ * 
+ * The last two values can be used in the experimentation phase to
+ * check the output of the server is correct.
+ */
 std::tuple<
 	std::vector<double>,
 	std::vector<double>,
@@ -177,17 +193,26 @@ load_client_data(int clientID)
 		expectedReward
 	};
 }
+/* 	END definition of function load_client_data  */
+
 
 /**
- * Definition of function client_setup:
+ * Definition of function client_setup.
+ * 
+ * Receives
+ *  - the cryptographic context,
+ *	- the client's public key,
+ *  - the client's consumption data,
+ *  - ... supply data
+ *  - ... deviation data,
+ *  - ... accepted for p2p-trading data.
  *
  * Returns a tuple with ciphertexts encrypting 
  * - the consumptions, 
  * - the supplies,
- * - the deviations, and 
- * - the signs of the deviations (marking negative or positive).
- * 
- * and a (plaintext) vector containing data on whether a user is accepted or not.
+ * - the deviations,
+ * - the signs of the deviations (marking negative or positive),
+ * - mask indicating when client was accepted for p2p-trading.
  */
 std::tuple<
 	Ciphertext<DCRTPoly>,
@@ -232,6 +257,7 @@ client_setup(
 }
 /* 	END definition of function client_setup  */
 
+
 std::tuple<
 	std::vector<double>,
 	std::vector<double>,
@@ -252,6 +278,7 @@ server_setup(std::vector<double> totalDeviation)
 		else // total_deviation[i] < 0
 			maskTotalDevNegative[i] = 1;
 	}
+
 	return {
 		maskTotalDevPositive,
 		maskTotalDevZero,
@@ -259,26 +286,46 @@ server_setup(std::vector<double> totalDeviation)
 	};
 }
 
+/*	END definition of function server_setup	*/
+
+
 /**
  * 	Definition of function server_billing:
  *
  *  Receives
- *  	the ciphertexts produced by client_setup,
- *  	a vector with the total deviation in clear,
- *  	a vector with the trading price of each time slot (in clear),
- *  	a vector with the retail price of each time slot (in clear),
- *  	a vector with the feed-in tariff of each time slot (in clear),
- *		the cryptographic context,
- *		the public key
+ *  * Cryptographic properties, i.e.,
+ *	  - the cryptographic context,
+ *	  - the public key.
  *
- *	Returns two ciphertexts encrypting the bill and the reward, respectively,
- *	for each time slot.
+ *  * Context information (for all timeslots)
+ *    - trading prices, 
+ *    - retail prices,
+ *    - feed-in tarifs,
+ *    - number of P2P-consumers,
+ *    - number of P2P-prosumers.
+ * 
+ *  * Deviation information (for all timeslots)
+ *    - total deviation,
+ *    - bits masking timeslots with positive deviation,
+ *    - ... with zero deviation,
+ *    - ... with negative deviation.
+ * 
+ *  * Encrypted client information (for all timeslots)
+ * 	  - consumption,
+ *    - supplies,
+ *    - deviations,
+ *    - masks indicating timeslots in which they had a non-negative deviation,
+ *    - masks indicating timeslots they were accepted for p2p trading.
  *
+ *	Returns two ciphertexts encrypting the bill and the reward, respectively, 
+ *  for this client, for each time slot.
+ * 
  *	All ciphertexts are encrypted under the client's key
  */
 std::tuple<Ciphertext<DCRTPoly>,
 		   Ciphertext<DCRTPoly>>
 server_billing(
+	// Cryptographic properties/values
 	CryptoContext<DCRTPoly> &cc,
 	PublicKey<DCRTPoly> publickey,
 
@@ -295,7 +342,7 @@ server_billing(
 	std::vector<double>	maskTotalDevZero,
 	std::vector<double>	maskTotalDevNegative,
 
-	// Private information
+	// Encrypted client information
 	Ciphertext<DCRTPoly> consumption,
 	Ciphertext<DCRTPoly> supplies,
 	Ciphertext<DCRTPoly> deviations,
@@ -389,7 +436,6 @@ void experiment()
 	auto keys = cc->KeyGen();			// encryption and decryption keys
 	cc->EvalMultKeyGen(keys.secretKey); // generates relinearization key
 	const PublicKey<DCRTPoly> &ckks_pub_key = keys.publicKey;
-	// const PrivateKey<DCRTPoly> &ckks_priv_key = keys.secretKey;
 
 	// Load experiment context
 	auto [
@@ -464,15 +510,6 @@ void experiment()
 		auto server_billing_end = std::chrono::high_resolution_clock::now();
 		auto billing_duration = std::chrono::duration_cast<std::chrono::microseconds>(server_billing_end - server_billing_start).count();
 		server_timings[userID] = billing_duration;
-
-		// // Decrypt bill and reward per timeslot
-		// lbcrypto::Plaintext pt_bill;
-		// cc->Decrypt(ckks_priv_key, ct_bill, &pt_bill);
-		// std::cout << "Bill: " << pt_bill << std::endl;
-
-		// lbcrypto::Plaintext pt_reward;
-		// cc->Decrypt(ckks_priv_key, ct_reward, &pt_reward);
-		// std::cout << "Reward: " << pt_reward << std::endl;
 	}
 
 	// Write client timings to file
