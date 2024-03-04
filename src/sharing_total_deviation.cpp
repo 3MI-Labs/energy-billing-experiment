@@ -3,14 +3,15 @@
 #include <vector>
 #include <iostream>
 #include <cassert>
-
+#include <chrono>
 #include <time.h>
 
 using namespace std;
 
+static const int MODULUS = 759250133; // 30-bit prime (close to 2^29.5)
+static const int NR_TIME_SLOTS = 1000; // each user will generate shares for this amount of time slots
 
 #define SEED int8_t* 
-
 
 SEED gen_random_seed() {
 	SEED s = (SEED) malloc(16 * sizeof(int8_t));
@@ -34,7 +35,7 @@ void print_seed(SEED s) {
 }
 
 /** Generates the O(n^2) seeds corresponding to all the n users */
-vector<vector<SEED> > generate_seed_matrix(int n_users) {
+vector<vector<SEED>> generate_seed_matrix(int n_users) {
 	vector<vector<SEED> > seed_matrix(n_users);
 	for(int i = 0; i < n_users; i++){
 		seed_matrix[i] = vector<SEED>(n_users);
@@ -68,7 +69,7 @@ vector<vector<CSPRNG*> > init_csprngs(const vector<vector<SEED> >& seeds, int n_
 		for(int j = 0; j < n_users; j++){
 			if (i == j){
 				csprng_matrix[i][j] = NULL;
-			}else {
+			} else {
 				csprng_matrix[i][j] = new CSPRNG(seeds[i][j]);
 			}
 		}
@@ -119,22 +120,18 @@ vector<int> generate_shares(int& round, int modulus, const vector<vector<CSPRNG*
 
 
 void test_shares(int n_users){
-    int modulus = 759250133; // 30-bit prime (close to 2^29.5)
-
-    int n_time_slots = 1000; // each user will generate shares for this amount of time slots
-
 	cout << "csprngs = setup(n_users, n_time_slots, modulus);" << endl;
-	vector<vector<CSPRNG*> > csprngs = setup(n_users, n_time_slots, modulus);
+	vector<vector<CSPRNG*> > csprngs = setup(n_users, NR_TIME_SLOTS, MODULUS);
 
     int round = 0;
 
     vector<int> shares(n_users);
 
-    for(int i = 0; i < n_time_slots; i++){
+    for(int i = 0; i < NR_TIME_SLOTS; i++){
         if (0 == i%100)
             cout << "generating shares for round " << round << endl;
-        shares = generate_shares(round, modulus, csprngs);
-        int s = sum_mod(shares, modulus);
+        shares = generate_shares(round, MODULUS, csprngs);
+        int s = sum_mod(shares, MODULUS);
 
         assert(0 == s); // sum of shares = 0 mod modulus
 
@@ -149,15 +146,35 @@ void test_shares(int n_users){
 
 }
 
+/**
+ * Test how long it takes to generate CSPRNG keys.
+ */ 
+void prngkeygen_experiment()
+{
+    for (int nr_users = 50; nr_users <= 500; nr_users += 50)
+    {
+        for (int nr_timeslots = 100; nr_timeslots <= 1000; nr_timeslots *= 10)
+        {
+            // Time the setup function
+            auto setup_begin = std::chrono::high_resolution_clock::now();
+            setup(nr_users, nr_timeslots, MODULUS);
+            auto setup_end = std::chrono::high_resolution_clock::now();
+            auto setup_duration = std::chrono::duration_cast<std::chrono::microseconds>(setup_end - setup_begin).count();
+
+            // Display results
+            std::cout << "nr_users: " << nr_users << ", "
+                      << "nr_time_slots: " << nr_timeslots 
+                      << " -> " << setup_duration 
+                      << std::endl;
+        }
+    }
+}
+
 
 int main() {
-    srand(time(NULL)); // XXX not secure. Enough for proof-of-concept.
+    srand(time(NULL)); // XXX not secure. Enough for timing experiments.
 
-    int n_users = 10;
-
-    cout << "test_shares( # users = " << n_users << " )" << endl;
-    test_shares(n_users);
-    cout << "test_shares( " << n_users << " ) .... OK" << endl;
+    prngkeygen_experiment();
 
 	return 0;
 }
