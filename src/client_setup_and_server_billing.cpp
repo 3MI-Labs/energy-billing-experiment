@@ -15,8 +15,9 @@ static const int DAYS = 1;
 static const int TIMESLOTS_PER_DAY = 24;
 static const int TIMESLOTS = DAYS * TIMESLOTS_PER_DAY;
 static const int NR_CLIENTS = 150;
-
 static const int N_TIME_SLOTS = 1024; // should be a power of two, greater than TIMESLOTS
+
+static const string DATA_DIR = "../../../energy-billing-data-generation/data";
 
 using namespace lbcrypto;
 
@@ -41,7 +42,7 @@ std::tuple<vector<double>,
 context_setup()
 {
 	std::string dirname = "/" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients";
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data" + dirname + "/context.csv";
+	std::string fname = DATA_DIR + dirname + "/context.csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
@@ -105,7 +106,7 @@ load_client_data(int clientID)
 {
 	// Open specified datafile
 	std::string dirname = "/" + std::to_string(TIMESLOTS) + "_ts_" + std::to_string(NR_CLIENTS) + "_clients";
-	std::string fname = "/home/erik/Documents/billing/energy-billing-data-generation/data" + dirname + "/user_" + std::to_string(clientID) + ".csv";
+	std::string fname = DATA_DIR + dirname + "/user_" + std::to_string(clientID) + ".csv";
 	std::cout << fname << std::endl;
 
 	ifstream inputFile(fname);
